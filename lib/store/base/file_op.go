@@ -32,6 +32,10 @@ const (
 	_lockLevelWrite
 )
 
+type PathProvider interface {
+	GetPaths() []string
+}
+
 // FileOp performs one file or metadata operation on FileStore, given a list of
 // acceptable states.
 type FileOp interface {
@@ -451,6 +455,15 @@ func (op *localFileOp) ListNames() ([]string, error) {
 		names = append(names, stateNames...)
 	}
 	return names, nil
+}
+
+// associated with the acceptable states.
+func (op *localFileOp) GetPaths() []string {
+	var dirs []string
+	for state := range op.states {
+		dirs = append(dirs, state.GetDirectory())
+	}
+	return dirs
 }
 
 func (op *localFileOp) String() string {

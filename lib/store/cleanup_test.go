@@ -247,15 +247,68 @@ func TestCleanupManagerAggressive(t *testing.T) {
 	_, op, cleanup := fileOpFixture(clk)
 	defer cleanup()
 
-	require.Equal(m.checkAggressiveCleanup(op, config, func() (int, error) {
+	require.Equal(m.checkAggressiveCleanup(op, config, []string{}, func() (int, error) {
+		return 90, nil
+	}, func(paths []string, totalSize uint64) (int, error) {
 		return 90, nil
 	}), 5*time.Second)
 
-	require.Equal(m.checkAggressiveCleanup(op, config, func() (int, error) {
+	require.Equal(m.checkAggressiveCleanup(op, config, []string{}, func() (int, error) {
+		return 60, nil
+	}, func(paths []string, totalSize uint64) (int, error) {
 		return 60, nil
 	}), 10*time.Second)
 
-	require.Equal(m.checkAggressiveCleanup(op, config, func() (int, error) {
+	require.Equal(m.checkAggressiveCleanup(op, config, []string{}, func() (int, error) {
+		return 0, errors.New("fake error")
+	}, func(paths []string, totalSize uint64) (int, error) {
 		return 0, errors.New("fake error")
 	}), 10*time.Second)
+}
+
+func TestCleanupManagerAggressiveScope(t *testing.T) {
+	require := require.New(t)
+
+	clk := clock.NewMock()
+	m, err := newCleanupManager(clk, tally.NoopScope)
+	require.NoError(err)
+	defer m.stop()
+
+	_, op, cleanup := fileOpFixture(clk)
+	defer cleanup()
+
+	configFilesystem := CleanupConfig{
+		AggressiveThreshold: 80,
+		TTL:                 10 * time.Second,
+		AggressiveTTL:       5 * time.Second,
+		AggressiveScope:     "filesystem",
+	}
+
+	configKraken := CleanupConfig{
+		AggressiveThreshold: 80,
+		TTL:                 10 * time.Second,
+		AggressiveTTL:       5 * time.Second,
+		AggressiveScope:     "kraken",
+	}
+
+	configDefault := CleanupConfig{
+		AggressiveThreshold: 80,
+		TTL:                 10 * time.Second,
+		AggressiveTTL:       5 * time.Second,
+	}
+	configDefault = configDefault.applyDefaults()
+	require.Equal("filesystem", configDefault.AggressiveScope)
+
+	require.Equal(m.checkAggressiveCleanup(op, configFilesystem, []string{}, func() (int, error) {
+		return 90, nil
+	}, func(paths []string, totalSize uint64) (int, error) {
+		return 50, nil // This shouldn't be called for filesystem scope
+	}), 5*time.Second)
+
+	require.Equal(m.checkAggressiveCleanup(op, configKraken, []string{"/test/path"}, func() (int, error) {
+		return 50, nil // This shouldn't be called for kraken scope
+	}, func(paths []string, totalSize uint64) (int, error) {
+		require.Equal([]string{"/test/path"}, paths)
+		return 90, nil
+	}), 5*time.Second)
 }

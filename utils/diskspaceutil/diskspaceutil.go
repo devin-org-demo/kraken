@@ -14,6 +14,8 @@
 package diskspaceutil
 
 import (
+	"os"
+	"path/filepath"
 	"syscall"
 )
 
@@ -31,5 +33,47 @@ func DiskSpaceUtil() (int, error) {
 	diskFree := fs.Bfree * uint64(fs.Bsize)
 	diskUsed := diskAll - diskFree
 	return int(diskUsed * 100 / diskAll), nil
+}
 
+func KrakenDiskUsage(paths []string, totalSize uint64) (int, error) {
+	var krakenUsed int64
+
+	for _, path := range paths {
+		size, err := calculateDirSize(path)
+		if err != nil {
+			continue
+		}
+		krakenUsed += size
+	}
+
+	if totalSize == 0 {
+		fs := syscall.Statfs_t{}
+		err := syscall.Statfs("/", &fs)
+		if err != nil {
+			return 0, err
+		}
+		totalSize = fs.Blocks * uint64(fs.Bsize)
+	}
+
+	if totalSize == 0 {
+		return 0, nil
+	}
+
+	return int(uint64(krakenUsed) * 100 / totalSize), nil
+}
+
+func calculateDirSize(path string) (int64, error) {
+	var size int64
+
+	err := filepath.Walk(path, func(_ string, info os.FileInfo, err error) error {
+		if err != nil {
+			return nil
+		}
+		if !info.IsDir() {
+			size += info.Size()
+		}
+		return nil
+	})
+
+	return size, err
 }
