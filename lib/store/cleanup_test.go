@@ -249,13 +249,48 @@ func TestCleanupManagerAggressive(t *testing.T) {
 
 	require.Equal(m.checkAggressiveCleanup(op, config, func() (int, error) {
 		return 90, nil
-	}), 5*time.Second)
+	}, 0, 0), 5*time.Second)
 
 	require.Equal(m.checkAggressiveCleanup(op, config, func() (int, error) {
 		return 60, nil
-	}), 10*time.Second)
+	}, 0, 0), 10*time.Second)
 
 	require.Equal(m.checkAggressiveCleanup(op, config, func() (int, error) {
 		return 0, errors.New("fake error")
-	}), 10*time.Second)
+	}, 0, 0), 10*time.Second)
+}
+
+func TestCleanupManagerAggressiveKrakenDiskUsage(t *testing.T) {
+	require := require.New(t)
+
+	config := CleanupConfig{
+		AggressiveThreshold: 80,
+		TTL:                 10 * time.Second,
+		AggressiveTTL:       5 * time.Second,
+		UseKrakenDiskUsage:  true,
+	}
+
+	clk := clock.NewMock()
+	m, err := newCleanupManager(clk, tally.NoopScope)
+	require.NoError(err)
+	defer m.stop()
+
+	_, op, cleanup := fileOpFixture(clk)
+	defer cleanup()
+
+	require.Equal(m.checkAggressiveCleanup(op, config, func() (int, error) {
+		return 50, nil // filesystem util should be ignored
+	}, 900, 1000), 5*time.Second)
+
+	require.Equal(m.checkAggressiveCleanup(op, config, func() (int, error) {
+		return 90, nil // filesystem util should be ignored
+	}, 600, 1000), 10*time.Second)
+
+	require.Equal(m.checkAggressiveCleanup(op, config, func() (int, error) {
+		return 90, nil
+	}, 500, 0), 5*time.Second)
+
+	require.Equal(m.checkAggressiveCleanup(op, config, func() (int, error) {
+		return 60, nil
+	}, 500, 0), 10*time.Second)
 }

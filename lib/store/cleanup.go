@@ -36,6 +36,7 @@ type CleanupConfig struct {
 	TTL                 time.Duration `yaml:"ttl"`                  // Time to live regardless of access. If 0, disables TTL.
 	AggressiveThreshold int           `yaml:"aggressive_threshold"` // The disk util threshold to trigger aggressive cleanup. If 0, disables aggressive cleanup.
 	AggressiveTTL       time.Duration `yaml:"aggressive_ttL"`       // Time to live regardless of access if aggressive cleanup is triggered.
+	UseKrakenDiskUsage  bool          `yaml:"use_kraken_disk_usage"` // If true, use Kraken's cache size instead of filesystem for aggressive threshold
 }
 
 type (
@@ -87,6 +88,10 @@ func newCleanupManager(clk clock.Clock, stats tally.Scope) (*cleanupManager, err
 // on the settings in config. op must set the desired states to clean before addJob
 // is called.
 func (m *cleanupManager) addJob(tag string, config CleanupConfig, op base.FileOp) {
+	m.addJobWithCapacity(tag, config, op, 0)
+}
+
+func (m *cleanupManager) addJobWithCapacity(tag string, config CleanupConfig, op base.FileOp, capacity int64) {
 	config = config.applyDefaults()
 	if config.Disabled {
 		log.Warnf("Cleanup disabled for %s", op)
@@ -109,12 +114,21 @@ func (m *cleanupManager) addJob(tag string, config CleanupConfig, op base.FileOp
 			select {
 			case <-ticker.C:
 				log.Debugf("Performing cleanup of %s", op)
-				ttl := m.checkAggressiveCleanup(op, config, diskspaceutil.DiskSpaceUtil)
-				usage, err := m.scan(op, config.TTI, ttl)
+				usage, err := m.scan(op, config.TTI, config.TTL)
 				if err != nil {
 					log.Errorf("Error scanning %s: %s", op, err)
 				}
 				usageGauge.Update(float64(usage))
+				
+				ttl := m.checkAggressiveCleanup(op, config, diskspaceutil.DiskSpaceUtil, usage, capacity)
+				
+				if ttl != config.TTL {
+					usage, err = m.scan(op, config.TTI, ttl)
+					if err != nil {
+						log.Errorf("Error scanning %s after aggressive cleanup: %s", op, err)
+					}
+					usageGauge.Update(float64(usage))
+				}
 			case <-m.stopc:
 				ticker.Stop()
 				return
@@ -174,15 +188,25 @@ func (m *cleanupManager) readyForDeletion(
 	return m.clk.Now().Sub(lat.Time) > tti, nil
 }
 
-func (m *cleanupManager) checkAggressiveCleanup(op base.FileOp, config CleanupConfig, util diskSpaceUtilFunc) time.Duration {
+func (m *cleanupManager) checkAggressiveCleanup(op base.FileOp, config CleanupConfig, util diskSpaceUtilFunc, krakenUsage int64, krakenCapacity int64) time.Duration {
 	if config.AggressiveThreshold != 0 {
-		diskspaceutil, err := util()
-		if err != nil {
-			log.Errorf("Error checking disk space util %s: %s", op, err)
-			return config.TTL
+		var utilization int
+		var err error
+		
+		if config.UseKrakenDiskUsage && krakenCapacity > 0 {
+			utilization = int(krakenUsage * 100 / krakenCapacity)
+			log.Debugf("Using Kraken disk usage for %s: %d bytes / %d bytes = %d%%", op, krakenUsage, krakenCapacity, utilization)
+		} else {
+			utilization, err = util()
+			if err != nil {
+				log.Errorf("Error checking disk space util %s: %s", op, err)
+				return config.TTL
+			}
+			log.Debugf("Using filesystem disk usage for %s: %d%%", op, utilization)
 		}
-		if diskspaceutil >= config.AggressiveThreshold {
-			log.Debugf("Aggressive cleanup of %s triggers with disk space util %d", op, diskspaceutil)
+		
+		if utilization >= config.AggressiveThreshold {
+			log.Debugf("Aggressive cleanup of %s triggers with disk util %d%%", op, utilization)
 			return config.AggressiveTTL
 		}
 	}
